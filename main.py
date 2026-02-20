@@ -7,8 +7,8 @@ from flask import Flask
 # ========================================
 # НАСТРОЙКИ БОТА
 # ========================================
-TOKEN = os.environ.get('8287330709:AAG9iEoCWoOxEeNi_Wbv3jUi8uJRZbxebMY')
-CHAT_ID = os.environ.get('5736199829')
+TOKEN = os.environ.get('TOKEN')
+CHAT_ID = os.environ.get('CHAT_ID')
 
 # RSS источники бесплатных игр
 RSS_URLS = [
