@@ -10,12 +10,18 @@ from flask import Flask
 TOKEN = os.environ.get('TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 
-# RSS источники бесплатных игр
-RSS_URLS = [
-    "https://www.reddit.com/r/FreeGamesOnSteam/.rss",
-    "https://www.reddit.com/r/FreeGameFindings/.rss",
-    "https://www.reddit.com/r/freegames/.rss"
-]
+# RSS источники
+RSS_SOURCES = {
+    'games': [
+        "https://www.reddit.com/r/FreeGamesOnSteam/.rss",
+        "https://www.reddit.com/r/FreeGameFindings/.rss",
+        "https://www.reddit.com/r/freegames/.rss"
+    ],
+    'avito': [
+        "https://www.avito.ru/rossiya?q=отдам+даром&s=104&format=rss",
+        "https://www.avito.ru/moskva?q=бесплатно&s=104&format=rss"
+    ]
+}
 
 seen_items = set()
 
@@ -43,15 +49,15 @@ def send_telegram(text):
         print(f"Ошибка: {e}")
         return False
 
-def check_rss():
+def check_games():
     """Проверяет новые раздачи игр"""
     new_items_count = 0
     
-    for rss_url in RSS_URLS:
+    for rss_url in RSS_SOURCES['games']:
         try:
             feed = feedparser.parse(rss_url)
             
-            for entry in feed.entries[:3]:  # Берем только 3 последних
+            for entry in feed.entries[:3]:
                 item_id = entry.link
                 
                 if item_id in seen_items:
@@ -59,9 +65,8 @@ def check_rss():
                     
                 seen_items.add(item_id)
                 
-                # Фильтруем только посты с FREE или бесплатно
                 title = entry.title
-                if not any(word in title.lower() for word in ['free', 'бесплатно', 'раздача', 'халява', '100%']):
+                if not any(word in title.lower() for word in ['free', 'бесплатно', 'раздача', '100%']):
                     continue
                 
                 link = entry.link
@@ -73,16 +78,64 @@ def check_rss():
 
 🔗 {link}
 
-⏰ <i>Успей забрать бесплатно!</i>
+⏰ <i>Успей забрать!</i>
                 """
                 
                 if send_telegram(message):
                     new_items_count += 1
-                    print(f"✅ Отправлено: {title[:50]}...")
-                    time.sleep(2)  # Пауза между сообщениями
+                    print(f"✅ [ИГРА] {title[:50]}...")
+                    time.sleep(2)
                     
         except Exception as e:
-            print(f"Ошибка парсинга {rss_url}: {e}")
+            print(f"Ошибка игр {rss_url}: {e}")
+    
+    return new_items_count
+
+def check_avito():
+    """Проверяет халяву на Авито"""
+    new_items_count = 0
+    
+    for rss_url in RSS_SOURCES['avito']:
+        try:
+            feed = feedparser.parse(rss_url)
+            
+            for entry in feed.entries[:5]:
+                item_id = entry.link
+                
+                if item_id in seen_items:
+                    continue
+                    
+                seen_items.add(item_id)
+                
+                title = entry.title
+                link = entry.link
+                
+                # Извлекаем город если есть
+                location = "Россия"
+                if hasattr(entry, 'summary'):
+                    summary = entry.summary
+                    if 'Адрес:' in summary:
+                        location = summary.split('Адрес:')[1].split('<')[0].strip()
+                
+                message = f"""
+💎 <b>ХАЛЯВА АВИТО!</b>
+
+🎁 {title}
+
+📍 {location}
+
+🔗 {link}
+
+⏰ <i>Забирай бесплатно!</i>
+                """
+                
+                if send_telegram(message):
+                    new_items_count += 1
+                    print(f"✅ [АВИТО] {title[:50]}...")
+                    time.sleep(2)
+                    
+        except Exception as e:
+            print(f"Ошибка Авито {rss_url}: {e}")
     
     return new_items_count
 
@@ -91,86 +144,97 @@ def check_rss():
 # ========================================
 
 print("=" * 50)
-print("🎮 БОТ РАЗДАЧ ИГР ЗАПУСКАЕТСЯ...")
+print("🎮💎 БОТ ИГРЫ + АВИТО ЗАПУСКАЕТСЯ...")
 print("=" * 50)
 
-# Первый запуск - запоминаем существующие посты
-print("📥 Загружаю существующие раздачи...")
-for rss_url in RSS_URLS:
-    try:
-        feed = feedparser.parse(rss_url)
-        for entry in feed.entries:
-            seen_items.add(entry.link)
-        print(f"✅ Загружено из {rss_url.split('/')[4]}: {len(feed.entries)} постов")
-    except Exception as e:
-        print(f"⚠️ Ошибка загрузки {rss_url}: {e}")
+# Первый запуск - запоминаем существующие
+print("📥 Загружаю существующие посты...")
+for category, urls in RSS_SOURCES.items():
+    for rss_url in urls:
+        try:
+            feed = feedparser.parse(rss_url)
+            for entry in feed.entries:
+                seen_items.add(entry.link)
+            print(f"✅ [{category.upper()}] Загружено: {len(feed.entries)} постов")
+        except Exception as e:
+            print(f"⚠️ Ошибка {rss_url}: {e}")
 
 print(f"✅ Всего загружено {len(seen_items)} постов")
-print("👀 Начинаю мониторинг новых раздач...")
 print("=" * 50)
 
-# Отправляем уведомление о запуске
-send_telegram("🎮 <b>Бот раздач игр запущен!</b>\n\n✅ Мониторю Reddit\n⏰ Проверка каждые 5 минут\n🎁 Буду присылать только бесплатные игры!")
+# Уведомление о запуске
+send_telegram("""
+🎮💎 <b>БОТ ЗАПУЩЕН!</b>
+
+✅ <b>Мониторю:</b>
+🎮 Reddit - бесплатные игры
+💎 Авито - отдам даром
+
+⏰ Проверка каждые 5 минут
+🎁 Только лучшие находки!
+""")
 
 # ========================================
-# FLASK ДЛЯ RENDER (чтобы не засыпал)
+# FLASK ДЛЯ RENDER
 # ========================================
 
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return """
+    return f"""
     <html>
         <body style="background: #1a1a2e; color: #eee; font-family: Arial; text-align: center; padding: 50px;">
-            <h1>🎮 Бот раздач игр работает!</h1>
-            <p>Проверок выполнено: """ + str(len(seen_items)) + """</p>
+            <h1>🎮💎 Бот игр + Авито работает!</h1>
+            <p>Проверок: {len(seen_items)}</p>
             <p>Статус: ✅ Онлайн</p>
+            <p>🎮 Игры + 💎 Авито</p>
         </body>
     </html>
     """
 
 @app.route('/health')
 def health():
-    return {"status": "ok", "items": len(seen_items)}
+    return {"status": "ok", "items": len(seen_items), "sources": ["games", "avito"]}
 
 # ========================================
 # ОСНОВНОЙ ЦИКЛ
 # ========================================
 
 def run_bot():
-    """Основной цикл проверки раздач"""
+    """Основной цикл"""
     while True:
         try:
             current_time = time.strftime('%H:%M:%S')
-            print(f"\n🔍 Проверяю новые раздачи... [{current_time}]")
+            print(f"\n🔍 Проверяю находки... [{current_time}]")
             
-            new_count = check_rss()
+            games = check_games()
+            avito = check_avito()
             
-            if new_count > 0:
-                print(f"✅ Найдено и отправлено новых раздач: {new_count}")
+            total = games + avito
+            
+            if total > 0:
+                print(f"✅ Найдено: 🎮 {games} игр, 💎 {avito} халявы")
             else:
-                print("ℹ️ Новых раздач не найдено")
+                print("ℹ️ Новых находок нет")
             
             print(f"💤 Следующая проверка через 5 минут...")
-            time.sleep(300)  # 5 минут
+            time.sleep(300)
             
         except Exception as e:
-            print(f"❌ Ошибка в основном цикле: {e}")
-            time.sleep(60)  # При ошибке ждем 1 минуту
+            print(f"❌ Ошибка: {e}")
+            time.sleep(60)
 
 # ========================================
-# ЗАПУСК В ПОТОКАХ
+# ЗАПУСК
 # ========================================
 
 if __name__ == '__main__':
     import threading
     
-    # Запускаем бота в отдельном потоке
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     
-    # Запускаем Flask для Render
     port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 Flask запущен на порту {port}")
+    print(f"🌐 Flask на порту {port}")
     app.run(host='0.0.0.0', port=port)
