@@ -1,0 +1,31 @@
+name: Keep Render Alive
+
+on:
+  schedule:
+    # Каждые 5 минут
+    - cron: '*/5 * * * *'
+  
+  # Можно запустить вручную
+  workflow_dispatch:
+
+jobs:
+  keep-alive:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Ping Render Service
+        run: |
+          echo "🔔 Пингую Render бота..."
+          curl -I https://botiphone.onrender.com
+          echo "✅ Готово! Render не спит 🔥"
+        continue-on-error: true
+      
+      - name: Check Health Endpoint
+        run: |
+          echo "🏥 Проверяю здоровье бота..."
+          curl -s https://botiphone.onrender.com/health || echo "⚠️ Health check failed"
+        continue-on-error: true
+      
+      - name: Log Status
+        run: |
+          echo "📊 Статус: Бот разбужен в $(date)"
