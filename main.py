@@ -5,6 +5,7 @@ import os
 from flask import Flask, request
 from datetime import datetime
 import threading
+import json
 
 # ========================================
 # НАСТРОЙКИ БОТА
@@ -33,7 +34,7 @@ stats = {
 # ФУНКЦИИ БОТА
 # ========================================
 
-def send_telegram(text, chat_id=None):
+def send_telegram(text, chat_id=None, reply_markup=None):
     """Отправляет сообщение в Telegram"""
     if chat_id is None:
         chat_id = CHAT_ID
@@ -45,6 +46,10 @@ def send_telegram(text, chat_id=None):
         "parse_mode": "HTML",
         "disable_web_page_preview": False
     }
+    
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
+    
     try:
         response = requests.post(url, data=data, timeout=10)
         return response.status_code == 200
@@ -52,74 +57,221 @@ def send_telegram(text, chat_id=None):
         print(f"Ошибка отправки: {e}")
         return False
 
+def get_main_keyboard():
+    """Постоянная клавиатура с командами"""
+    return {
+        "keyboard": [
+            [
+                {"text": "📊 Статус"},
+                {"text": "🔍 Проверить"}
+            ],
+            [
+                {"text": "❓ Помощь"},
+                {"text": "⚙️ Настройки"}
+            ]
+        ],
+        "resize_keyboard": True,
+        "persistent": True
+    }
+
+def get_game_buttons(link):
+    """Inline кнопки для сообщения с игрой"""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "🎁 Забрать игру", "url": link}
+            ],
+            [
+                {"text": "🔍 Найти отзывы", "url": f"https://www.google.com/search?q={link}+reviews"},
+                {"text": "📊 SteamDB", "url": f"https://steamdb.info/search/?a=app&q={link}"}
+            ]
+        ]
+    }
+
 def handle_command(text, chat_id):
-    """Обрабатывает команду"""
+    """Обрабатывает команды и кнопки"""
     
-    # Команда /start
-    if text == '/start':
+    # Команда /start или кнопка "Старт"
+    if text == '/start' or text == '🏠 Главная':
         send_telegram("""
 🎮 <b>Бот раздач игр активен!</b>
 
-<b>Доступные команды:</b>
+<b>Что я умею:</b>
+🔍 Мониторю Reddit каждые 5 минут
+🎁 Нахожу бесплатные игры
+📱 Присылаю уведомления с кнопками!
 
-/status - Статус бота
-/test - Проверить прямо сейчас
-/help - Помощь
-
-⏰ Автопроверка каждые 5 минут
-🎁 Присылаю только бесплатные игры!
-        """, chat_id)
+<b>Используйте кнопки ниже для управления ⬇️</b>
+        """, chat_id, get_main_keyboard())
     
-    # Команда /status
-    elif text == '/status':
+    # Команда /status или кнопка "📊 Статус"
+    elif text == '/status' or text == '📊 Статус':
         uptime = datetime.now() - stats['started_at']
         hours = int(uptime.total_seconds() // 3600)
         minutes = int((uptime.total_seconds() % 3600) // 60)
         
         last_check = stats['last_check'] or "Еще не было"
         
+        # Inline кнопки для статуса
+        status_buttons = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔄 Обновить", "callback_data": "refresh_status"}
+                ],
+                [
+                    {"text": "📈 Полная статистика", "callback_data": "full_stats"}
+                ]
+            ]
+        }
+        
         send_telegram(f"""
 📊 <b>СТАТУС БОТА</b>
 
-✅ Работает: {hours}ч {minutes}м
-🔍 Проверок выполнено: {stats['total_checks']}
-🎮 Игр найдено: {stats['games_found']}
-💾 Постов в памяти: {len(seen_items)}
+✅ Работает: <b>{hours}ч {minutes}м</b>
+🔍 Проверок: <b>{stats['total_checks']}</b>
+🎮 Игр найдено: <b>{stats['games_found']}</b>
+💾 Постов в памяти: <b>{len(seen_items)}</b>
 
-⏰ Последняя проверка: {last_check}
+⏰ Последняя проверка: <code>{last_check}</code>
 
 📡 Мониторю Reddit каждые 5 минут
-        """, chat_id)
+        """, chat_id, status_buttons)
     
-    # Команда /test
-    elif text == '/test':
-        send_telegram("🔍 Запускаю проверку...", chat_id)
+    # Команда /test или кнопка "🔍 Проверить"
+    elif text == '/test' or text == '🔍 Проверить':
+        # Кнопки для проверки
+        test_buttons = {
+            "inline_keyboard": [
+                [
+                    {"text": "⏳ Проверка...", "callback_data": "checking"}
+                ]
+            ]
+        }
+        
+        send_telegram("🔍 <b>Запускаю проверку Reddit...</b>", chat_id, test_buttons)
+        
         found = check_games()
+        
         if found > 0:
-            send_telegram(f"✅ Найдено новых игр: {found}", chat_id)
+            send_telegram(f"✅ <b>Найдено новых игр: {found}</b>\n\nСмотрите выше ⬆️", chat_id)
         else:
-            send_telegram("ℹ️ Новых раздач пока нет", chat_id)
+            result_buttons = {
+                "inline_keyboard": [
+                    [
+                        {"text": "🔄 Проверить еще раз", "callback_data": "test_again"}
+                    ]
+                ]
+            }
+            send_telegram("ℹ️ Новых раздач пока нет\n\n<i>Попробуйте через 10-15 минут</i>", chat_id, result_buttons)
     
-    # Команда /help
-    elif text == '/help':
+    # Команда /help или кнопка "❓ Помощь"
+    elif text == '/help' or text == '❓ Помощь':
+        help_buttons = {
+            "inline_keyboard": [
+                [
+                    {"text": "💬 Написать разработчику", "url": "https://t.me/your_username"}
+                ],
+                [
+                    {"text": "⭐ Оценить бота", "url": "https://t.me/your_bot?start=rate"}
+                ]
+            ]
+        }
+        
         send_telegram("""
 ❓ <b>ПОМОЩЬ</b>
 
 <b>Команды:</b>
-/status - Узнать статус бота
-/test - Проверить новые раздачи
-/start - Главное меню
+📊 Статус - Узнать статус бота
+🔍 Проверить - Проверить новые раздачи
+⚙️ Настройки - Настроить уведомления
 
 <b>Как работает:</b>
 🔍 Каждые 5 минут бот проверяет Reddit
 🎮 Находит бесплатные игры
-📱 Присылает вам уведомление
+📱 Присылает уведомления с кнопками
+🎁 Нажимаете "Забрать" - переходите на раздачу
 
 <b>Источники:</b>
 • r/FreeGamesOnSteam
 • r/FreeGameFindings  
 • r/freegames
+
+<b>Платформы:</b>
+🎮 Steam, Epic Games, GOG, Xbox
+        """, chat_id, help_buttons)
+    
+    # Кнопка "⚙️ Настройки"
+    elif text == '⚙️ Настройки':
+        settings_buttons = {
+            "inline_keyboard": [
+                [
+                    {"text": "🔔 Уведомления: ВКЛ", "callback_data": "toggle_notifications"}
+                ],
+                [
+                    {"text": "🎮 Только Steam", "callback_data": "filter_steam"},
+                    {"text": "🎁 Все платформы", "callback_data": "filter_all"}
+                ],
+                [
+                    {"text": "💰 Мин. цена: $0", "callback_data": "set_min_price"}
+                ]
+            ]
+        }
+        
+        send_telegram("""
+⚙️ <b>НАСТРОЙКИ</b>
+
+<b>Уведомления:</b> ✅ Включены
+
+<b>Фильтры:</b>
+🎮 Платформы: Все
+💰 Мин. цена: $0 (все раздачи)
+
+<i>Используйте кнопки для настройки ⬇️</i>
+        """, chat_id, settings_buttons)
+
+def handle_callback(callback_query):
+    """Обрабатывает нажатия на inline кнопки"""
+    callback_id = callback_query['id']
+    data = callback_query.get('data', '')
+    chat_id = callback_query['message']['chat']['id']
+    message_id = callback_query['message']['message_id']
+    
+    # Отправляем уведомление о нажатии
+    answer_url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
+    
+    if data == "refresh_status":
+        requests.post(answer_url, json={"callback_query_id": callback_id, "text": "🔄 Обновляю..."})
+        handle_command('/status', chat_id)
+    
+    elif data == "test_again":
+        requests.post(answer_url, json={"callback_query_id": callback_id, "text": "🔍 Проверяю..."})
+        handle_command('/test', chat_id)
+    
+    elif data == "full_stats":
+        requests.post(answer_url, json={"callback_query_id": callback_id, "text": "📊 Показываю статистику..."})
+        
+        uptime = datetime.now() - stats['started_at']
+        days = int(uptime.total_seconds() // 86400)
+        hours = int((uptime.total_seconds() % 86400) // 3600)
+        
+        send_telegram(f"""
+📈 <b>ПОЛНАЯ СТАТИСТИКА</b>
+
+⏰ <b>Работает:</b> {days} дн. {hours} ч.
+🔍 <b>Всего проверок:</b> {stats['total_checks']}
+🎮 <b>Игр найдено:</b> {stats['games_found']}
+💾 <b>Постов в памяти:</b> {len(seen_items)}
+
+📊 <b>Средняя частота:</b>
+• Проверок в час: {stats['total_checks'] / max(1, hours)}
+• Игр в день: {stats['games_found'] * 24 / max(1, hours)}
+
+🎯 <b>Эффективность:</b>
+• Игр на проверку: {stats['games_found'] / max(1, stats['total_checks'])}
         """, chat_id)
+    
+    else:
+        requests.post(answer_url, json={"callback_query_id": callback_id, "text": "⚠️ В разработке..."})
 
 def check_games():
     """Проверяет новые раздачи игр"""
@@ -145,17 +297,33 @@ def check_games():
                 
                 link = entry.link
                 
+                # Определяем платформу
+                platform = "🎮"
+                if 'steam' in link.lower():
+                    platform = "🎮 Steam"
+                elif 'epicgames' in link.lower():
+                    platform = "🎁 Epic Games"
+                elif 'gog.com' in link.lower():
+                    platform = "🎁 GOG"
+                elif 'xbox' in link.lower():
+                    platform = "🎮 Xbox"
+                
                 message = f"""
 🎮 <b>БЕСПЛАТНАЯ ИГРА!</b>
 
-🎁 {title}
+🎁 <b>{title}</b>
+
+📦 Платформа: {platform}
 
 🔗 {link}
 
 ⏰ <i>Успей забрать бесплатно!</i>
                 """
                 
-                if send_telegram(message):
+                # Кнопки для игры
+                game_buttons = get_game_buttons(link)
+                
+                if send_telegram(message, reply_markup=game_buttons):
                     new_items_count += 1
                     stats['games_found'] += 1
                     print(f"✅ [ИГРА] {title[:50]}...")
@@ -257,19 +425,21 @@ def webhook():
     """Принимает сообщения от Telegram через webhook"""
     try:
         update = request.get_json()
-        print(f"📨 Получено: {update}")
         
+        # Обработка callback (нажатия на кнопки)
+        if 'callback_query' in update:
+            handle_callback(update['callback_query'])
+            return {"ok": True}
+        
+        # Обработка сообщений
         if 'message' in update:
             message = update['message']
             text = message.get('text', '')
             chat_id = message['chat']['id']
             
-            print(f"💬 Сообщение: {text} от {chat_id}")
-            
             # Проверяем что это наш чат
             if str(chat_id) == str(CHAT_ID):
-                if text.startswith('/'):
-                    handle_command(text, chat_id)
+                handle_command(text, chat_id)
         
         return {"ok": True}
     except Exception as e:
@@ -282,7 +452,7 @@ def webhook():
 
 def setup_webhook():
     """Устанавливает webhook для бота"""
-    time.sleep(10)  # Ждем пока Flask запустится
+    time.sleep(10)
     
     webhook_url = f"https://botiphone.onrender.com/webhook"
     api_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
@@ -301,7 +471,7 @@ def setup_webhook():
 # ========================================
 
 print("=" * 50)
-print("🎮 БОТ ЗАПУСКАЕТСЯ...")
+print("🎮 БОТ С КНОПКАМИ ЗАПУСКАЕТСЯ...")
 print("=" * 50)
 
 # Загружаем существующие посты
@@ -325,7 +495,7 @@ print("=" * 50)
 
 def run_bot():
     """Основной цикл проверки"""
-    time.sleep(15)  # Ждем пока webhook установится
+    time.sleep(15)
     
     while True:
         try:
