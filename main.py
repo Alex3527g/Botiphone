@@ -2,8 +2,9 @@ import feedparser
 import requests
 import time
 import os
-from flask import Flask
+from flask import Flask, request
 from datetime import datetime
+import threading
 
 # ========================================
 # НАСТРОЙКИ БОТА
@@ -32,50 +33,31 @@ stats = {
 # ФУНКЦИИ БОТА
 # ========================================
 
-def send_telegram(text):
+def send_telegram(text, chat_id=None):
     """Отправляет сообщение в Telegram"""
+    if chat_id is None:
+        chat_id = CHAT_ID
+        
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
     data = {
-        "chat_id": CHAT_ID, 
+        "chat_id": chat_id, 
         "text": text, 
         "parse_mode": "HTML",
         "disable_web_page_preview": False
     }
     try:
-        response = requests.post(url, data=data)
+        response = requests.post(url, data=data, timeout=10)
         return response.status_code == 200
     except Exception as e:
         print(f"Ошибка отправки: {e}")
         return False
 
-def get_updates():
-    """Получает обновления от Telegram (для команд)"""
-    url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            return response.json().get('result', [])
-    except:
-        pass
-    return []
-
-def handle_commands():
-    """Обрабатывает команды от пользователя"""
-    updates = get_updates()
+def handle_command(text, chat_id):
+    """Обрабатывает команду"""
     
-    for update in updates:
-        if 'message' in update:
-            message = update['message']
-            text = message.get('text', '')
-            chat_id = message['chat']['id']
-            
-            # Проверяем что это наш чат
-            if str(chat_id) != str(CHAT_ID):
-                continue
-            
-            # Команда /start
-            if text == '/start':
-                send_telegram("""
+    # Команда /start
+    if text == '/start':
+        send_telegram("""
 🎮 <b>Бот раздач игр активен!</b>
 
 <b>Доступные команды:</b>
@@ -86,17 +68,17 @@ def handle_commands():
 
 ⏰ Автопроверка каждые 5 минут
 🎁 Присылаю только бесплатные игры!
-                """)
-            
-            # Команда /status
-            elif text == '/status':
-                uptime = datetime.now() - stats['started_at']
-                hours = int(uptime.total_seconds() // 3600)
-                minutes = int((uptime.total_seconds() % 3600) // 60)
-                
-                last_check = stats['last_check'] or "Еще не было"
-                
-                send_telegram(f"""
+        """, chat_id)
+    
+    # Команда /status
+    elif text == '/status':
+        uptime = datetime.now() - stats['started_at']
+        hours = int(uptime.total_seconds() // 3600)
+        minutes = int((uptime.total_seconds() % 3600) // 60)
+        
+        last_check = stats['last_check'] or "Еще не было"
+        
+        send_telegram(f"""
 📊 <b>СТАТУС БОТА</b>
 
 ✅ Работает: {hours}ч {minutes}м
@@ -107,20 +89,20 @@ def handle_commands():
 ⏰ Последняя проверка: {last_check}
 
 📡 Мониторю Reddit каждые 5 минут
-                """)
-            
-            # Команда /test
-            elif text == '/test':
-                send_telegram("🔍 Запускаю проверку...")
-                found = check_games()
-                if found > 0:
-                    send_telegram(f"✅ Найдено новых игр: {found}")
-                else:
-                    send_telegram("ℹ️ Новых раздач пока нет")
-            
-            # Команда /help
-            elif text == '/help':
-                send_telegram("""
+        """, chat_id)
+    
+    # Команда /test
+    elif text == '/test':
+        send_telegram("🔍 Запускаю проверку...", chat_id)
+        found = check_games()
+        if found > 0:
+            send_telegram(f"✅ Найдено новых игр: {found}", chat_id)
+        else:
+            send_telegram("ℹ️ Новых раздач пока нет", chat_id)
+    
+    # Команда /help
+    elif text == '/help':
+        send_telegram("""
 ❓ <b>ПОМОЩЬ</b>
 
 <b>Команды:</b>
@@ -137,7 +119,7 @@ def handle_commands():
 • r/FreeGamesOnSteam
 • r/FreeGameFindings  
 • r/freegames
-                """)
+        """, chat_id)
 
 def check_games():
     """Проверяет новые раздачи игр"""
@@ -185,7 +167,7 @@ def check_games():
     return new_items_count
 
 # ========================================
-# FLASK ДЛЯ RENDER
+# FLASK + WEBHOOK
 # ========================================
 
 app = Flask(__name__)
@@ -270,15 +252,59 @@ def health():
         "checks": stats['total_checks']
     }
 
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """Принимает сообщения от Telegram через webhook"""
+    try:
+        update = request.get_json()
+        print(f"📨 Получено: {update}")
+        
+        if 'message' in update:
+            message = update['message']
+            text = message.get('text', '')
+            chat_id = message['chat']['id']
+            
+            print(f"💬 Сообщение: {text} от {chat_id}")
+            
+            # Проверяем что это наш чат
+            if str(chat_id) == str(CHAT_ID):
+                if text.startswith('/'):
+                    handle_command(text, chat_id)
+        
+        return {"ok": True}
+    except Exception as e:
+        print(f"❌ Ошибка webhook: {e}")
+        return {"ok": False}, 500
+
+# ========================================
+# НАСТРОЙКА WEBHOOK
+# ========================================
+
+def setup_webhook():
+    """Устанавливает webhook для бота"""
+    time.sleep(10)  # Ждем пока Flask запустится
+    
+    webhook_url = f"https://botiphone.onrender.com/webhook"
+    api_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook"
+    
+    try:
+        response = requests.post(api_url, json={"url": webhook_url})
+        if response.status_code == 200:
+            print(f"✅ Webhook установлен: {webhook_url}")
+        else:
+            print(f"⚠️ Ошибка webhook: {response.text}")
+    except Exception as e:
+        print(f"❌ Ошибка установки webhook: {e}")
+
 # ========================================
 # ЗАПУСК БОТА
 # ========================================
 
 print("=" * 50)
-print("🎮 БОТ ЗАПУСКАЕТСЯ (БЕЗ УВЕДОМЛЕНИЙ)...")
+print("🎮 БОТ ЗАПУСКАЕТСЯ...")
 print("=" * 50)
 
-# Первый запуск - загружаем существующие посты
+# Загружаем существующие посты
 print("📥 Загружаю существующие посты...")
 for category, urls in RSS_SOURCES.items():
     for rss_url in urls:
@@ -288,29 +314,21 @@ for category, urls in RSS_SOURCES.items():
                 seen_items.add(entry.link)
             print(f"✅ Загружено: {len(feed.entries)} постов")
         except Exception as e:
-            print(f"⚠️ Ошибка {rss_url}: {e}")
+            print(f"⚠️ Ошибка: {e}")
 
 print(f"✅ Всего загружено {len(seen_items)} постов")
 print("=" * 50)
-
-# БЕЗ АВТОМАТИЧЕСКОГО СООБЩЕНИЯ "БОТ ЗАПУЩЕН"!
-# Только команды /start, /status, /test работают!
 
 # ========================================
 # ОСНОВНОЙ ЦИКЛ
 # ========================================
 
 def run_bot():
-    """Основной цикл"""
-    # Небольшая задержка чтобы Flask запустился
-    time.sleep(5)
+    """Основной цикл проверки"""
+    time.sleep(15)  # Ждем пока webhook установится
     
     while True:
         try:
-            # Проверяем команды
-            handle_commands()
-            
-            # Проверяем игры
             current_time = time.strftime('%H:%M:%S')
             print(f"\n🔍 Проверяю Reddit... [{current_time}]")
             
@@ -335,9 +353,11 @@ def run_bot():
 # ========================================
 
 if __name__ == '__main__':
-    import threading
+    # Запускаем установку webhook
+    webhook_thread = threading.Thread(target=setup_webhook, daemon=True)
+    webhook_thread.start()
     
-    # Запускаем бота в отдельном потоке
+    # Запускаем бота
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
     
