@@ -14,6 +14,33 @@ from bs4 import BeautifulSoup
 TOKEN = os.environ.get('TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 
+# Файл для хранения истории
+HISTORY_FILE = 'seen_items.json'
+
+# ========================================
+# ФУНКЦИИ СОХРАНЕНИЯ/ЗАГРУЗКИ
+# ========================================
+
+def load_history():
+    """Загружает историю из файла"""
+    try:
+        if os.path.exists(HISTORY_FILE):
+            with open(HISTORY_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                print(f"📥 Загружено из истории: {len(data)} постов")
+                return set(data)
+    except Exception as e:
+        print(f"⚠️ Ошибка загрузки истории: {e}")
+    return set()
+
+def save_history():
+    """Сохраняет историю в файл"""
+    try:
+        with open(HISTORY_FILE, 'w', encoding='utf-8') as f:
+            json.dump(list(seen_items), f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ Ошибка сохранения: {e}")
+
 # ========================================
 # ВСЕ ИСТОЧНИКИ
 # ========================================
@@ -38,22 +65,15 @@ RSS_SOURCES = {
     ],
 }
 
-# Прямые ссылки (без RSS)
+# Прямые ссылки
 DIRECT_SOURCES = {
     'steamdb': 'https://steamdb.info/upcoming/free/',
     'epic': 'https://store.epicgames.com/en-US/free-games',
-    'gog': 'https://www.gog.com/',
-    'isthereanydeal': 'https://isthereanydeal.com/specials/#/filter:&giveaway'
 }
 
-# Telegram каналы для парсинга
-TELEGRAM_CHANNELS = [
-    '@free_games_pc',
-    '@steamgiveaways',
-    '@freegamefindings'
-]
+# Загружаем историю при старте
+seen_items = load_history()
 
-seen_items = set()
 stats = {
     'last_check': None,
     'games_found': 0,
@@ -63,7 +83,6 @@ stats = {
         'reddit': 0,
         'steamdb': 0,
         'epic': 0,
-        'telegram': 0,
         'other': 0
     }
 }
@@ -105,7 +124,7 @@ def get_main_keyboard():
             ],
             [
                 {"text": "📈 Источники"},
-                {"text": "❓ Наська"}
+                {"text": "🗑️ Очистить"}
             ]
         ],
         "resize_keyboard": True,
@@ -118,15 +137,13 @@ def get_game_buttons(link, source=''):
         [{"text": "🎁 Забрать игру", "url": link}]
     ]
     
-    # Дополнительные кнопки в зависимости от источника
     if 'steam' in link.lower():
         buttons.append([
-            {"text": "📊 SteamDB", "url": f"https://steamdb.info/search/?a=app&q={link}"},
-            {"text": "🔍 Отзывы", "url": f"https://store.steampowered.com/search/?term={link}"}
+            {"text": "📊 SteamDB", "url": f"https://steamdb.info/search/?a=app&q={link}"}
         ])
     elif 'epicgames' in link.lower():
         buttons.append([
-            {"text": "📊 Инфо Epic", "url": "https://www.epicgames.com/store/free-games"}
+            {"text": "📊 Epic Store", "url": "https://www.epicgames.com/store/free-games"}
         ])
     
     return {"inline_keyboard": buttons}
@@ -149,13 +166,15 @@ def check_reddit():
                 if item_id in seen_items:
                     continue
                     
-                seen_items.add(item_id)
                 title = entry.title
                 
                 # Фильтр
                 keywords = ['free', 'бесплатно', '100%', 'giveaway', 'раздача', 'freebie']
                 if not any(word in title.lower() for word in keywords):
                     continue
+                
+                seen_items.add(item_id)
+                save_history()  # Сохраняем сразу!
                 
                 link = entry.link
                 
@@ -196,7 +215,6 @@ def check_steamdb():
         if response.status_code == 200:
             soup = BeautifulSoup(response.text, 'html.parser')
             
-            # Парсим бесплатные пакеты
             packages = soup.find_all('tr', limit=10)
             
             for package in packages:
@@ -214,6 +232,7 @@ def check_steamdb():
                         continue
                     
                     seen_items.add(item_id)
+                    save_history()  # Сохраняем!
                     
                     message = f"""
 🎮 <b>STEAM РАЗДАЧА!</b>
@@ -246,8 +265,7 @@ def check_epic_games():
     new_items = 0
     
     try:
-        # API Epic Games
-        api_url = "https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
+        api_url = "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions"
         
         response = requests.get(api_url, timeout=10)
         
@@ -258,7 +276,6 @@ def check_epic_games():
             
             for game in games:
                 try:
-                    # Проверяем что игра бесплатная
                     promotions = game.get('promotions')
                     if not promotions:
                         continue
@@ -266,15 +283,16 @@ def check_epic_games():
                     title = game.get('title', 'Unknown Game')
                     description = game.get('description', '')
                     
-                    # ID для проверки дубликатов
                     item_id = f"epic_{title}"
                     
                     if item_id in seen_items:
                         continue
                     
                     seen_items.add(item_id)
+                    save_history()  # Сохраняем!
                     
-                    link = f"https://store.epicgames.com/en-US/p/{game.get('productSlug', '')}"
+                    product_slug = game.get('productSlug', game.get('catalogNs', {}).get('mappings', [{}])[0].get('pageSlug', ''))
+                    link = f"https://store.epicgames.com/en-US/p/{product_slug}"
                     
                     message = f"""
 🎁 <b>EPIC GAMES РАЗДАЧА!</b>
@@ -320,9 +338,10 @@ def check_dealabs():
                 
                 title = entry.title
                 
-                # Ищем бесплатные или очень дешевые
                 if 'gratuit' in title.lower() or 'free' in title.lower() or '0€' in title or '0$' in title:
                     seen_items.add(item_id)
+                    save_history()  # Сохраняем!
+                    
                     link = entry.link
                     
                     message = f"""
@@ -384,6 +403,9 @@ def check_all_sources():
     print(f"✅ ВСЕГО НАЙДЕНО: {total_found}")
     print("="*50 + "\n")
     
+    # Сохраняем историю после проверки
+    save_history()
+    
     return total_found
 
 # ========================================
@@ -402,9 +424,10 @@ def handle_command(text, chat_id):
 🎮 SteamDB
 🎁 Epic Games
 💎 Dealabs
-🌍 Slickdeals
 
 ⏰ Проверка каждые 5 минут
+💾 История сохраняется!
+
 📊 Используйте кнопки ниже ⬇️
         """, chat_id, get_main_keyboard())
     
@@ -419,6 +442,7 @@ def handle_command(text, chat_id):
 ✅ Работает: <b>{hours}ч {minutes}м</b>
 🔍 Проверок: <b>{stats['total_checks']}</b>
 🎮 Игр найдено: <b>{stats['games_found']}</b>
+💾 В памяти: <b>{len(seen_items)}</b> постов
 
 📈 <b>По источникам:</b>
 📱 Reddit: {stats['sources']['reddit']}
@@ -430,57 +454,78 @@ def handle_command(text, chat_id):
         """, chat_id)
     
     elif text == '/test' or text == '🔍 Проверить':
-        send_telegram("🔍 <b>Запускаю полную проверку всех источников...</b>", chat_id)
+        send_telegram("🔍 <b>Запускаю полную проверку...</b>", chat_id)
         
         found = check_all_sources()
         
         if found > 0:
             send_telegram(f"✅ <b>Найдено: {found} раздач!</b>\n\nСмотрите выше ⬆️", chat_id)
         else:
-            send_telegram("ℹ️ Новых раздач пока нет\n\n<i>Попробуйте через 10-15 минут</i>", chat_id)
+            send_telegram("ℹ️ Новых раздач пока нет\n\n<i>История сохранена!</i>", chat_id)
     
     elif text == '📈 Источники':
         send_telegram(f"""
 📈 <b>АКТИВНЫЕ ИСТОЧНИКИ</b>
 
-<b>Reddit:</b>
+<b>Reddit (RSS):</b>
 • r/FreeGamesOnSteam
 • r/FreeGameFindings
 • r/freegames
 • r/GameDeals
 
 <b>Прямые источники:</b>
-• SteamDB Free Packages
+• SteamDB (парсинг)
 • Epic Games (API)
-• GOG раздачи
-• IsThereAnyDeal
 
 <b>Европа/США:</b>
 • Dealabs (🇪🇺)
 • Slickdeals (🇺🇸)
 
-<b>Всего источников: 10+</b>
+<b>Всего источников: 8+</b>
+💾 <b>В памяти: {len(seen_items)} постов</b>
         """, chat_id)
+    
+    elif text == '🗑️ Очистить' or text == '/clear':
+        confirm_buttons = {
+            "inline_keyboard": [
+                [
+                    {"text": "✅ Да, очистить", "callback_data": "confirm_clear"},
+                    {"text": "❌ Отмена", "callback_data": "cancel_clear"}
+                ]
+            ]
+        }
+        
+        send_telegram(f"""
+⚠️ <b>ВНИМАНИЕ!</b>
+
+Вы хотите очистить историю?
+
+💾 Сейчас в памяти: <b>{len(seen_items)}</b> постов
+
+После очистки бот заново загрузит все игры!
+<b>Будет много сообщений!</b>
+
+Продолжить?
+        """, chat_id, confirm_buttons)
     
     elif text == '/help' or text == '❓ Помощь':
         send_telegram("""
 ❓ <b>ПОМОЩЬ</b>
 
 <b>Команды:</b>
-📊 Статус - Статистика бота
-🔍 Проверить - Проверить все источники
+📊 Статус - Статистика
+🔍 Проверить - Проверить сейчас
 📈 Источники - Список источников
+🗑️ Очистить - Очистить историю
 
 <b>Как работает:</b>
-🔍 Каждые 5 минут проверяю 10+ источников
+🔍 Каждые 5 минут проверяю 8+ источников
 🎮 Нахожу бесплатные игры
+💾 Сохраняю историю (не дублирую)
 📱 Присылаю с кнопками
 
 <b>Платформы:</b>
-🎮 Steam, Epic, GOG, Xbox, PlayStation
-
-<b>Регионы:</b>
-🌍 Весь мир, Европа, США
+🎮 Steam, Epic, GOG
         """, chat_id)
 
 def handle_callback(callback_query):
@@ -490,7 +535,39 @@ def handle_callback(callback_query):
     chat_id = callback_query['message']['chat']['id']
     
     answer_url = f"https://api.telegram.org/bot{TOKEN}/answerCallbackQuery"
-    requests.post(answer_url, json={"callback_query_id": callback_id, "text": "✅"})
+    
+    if data == "confirm_clear":
+        requests.post(answer_url, json={"callback_query_id": callback_id, "text": "🗑️ Очищаю..."})
+        
+        old_count = len(seen_items)
+        seen_items.clear()
+        save_history()
+        
+        send_telegram(f"""
+✅ <b>История очищена!</b>
+
+🗑️ Удалено: {old_count} постов
+
+🔄 Сейчас запущу проверку...
+Приготовьтесь к сообщениям! 😅
+        """, chat_id)
+        
+        found = check_all_sources()
+        
+        send_telegram(f"""
+✅ <b>Проверка завершена!</b>
+
+🎮 Найдено и отправлено: {found} игр
+
+💾 История обновлена!
+        """, chat_id)
+    
+    elif data == "cancel_clear":
+        requests.post(answer_url, json={"callback_query_id": callback_id, "text": "❌ Отменено"})
+        send_telegram("❌ Очистка отменена", chat_id)
+    
+    else:
+        requests.post(answer_url, json={"callback_query_id": callback_id, "text": "✅"})
 
 # ========================================
 # FLASK + WEBHOOK
@@ -538,17 +615,16 @@ def home():
         </head>
         <body>
             <div class="container">
-                <h1>🎮 Multi-Source Free Games Bot</h1>
+                <h1>🎮 Multi-Source Bot</h1>
                 <p>✅ Онлайн • Работает {hours}ч</p>
                 
                 <div class="stats">
                     <div class="stat">
                         <div style="font-size:32px">{stats['total_checks']}</div>
-                        <div>Проверок</div>
+                                                <div>Проверок</div>
                     </div>
                     <div class="stat">
-                        <div style="font
-                            <div style="font-size:32px">{stats['games_found']}</div>
+                        <div style="font-size:32px">{stats['games_found']}</div>
                         <div>Игр найдено</div>
                     </div>
                     <div class="stat">
@@ -623,6 +699,17 @@ def setup_webhook():
         response = requests.post(api_url, json={"url": webhook_url})
         if response.status_code == 200:
             print(f"✅ Webhook установлен: {webhook_url}")
+            
+            # Отправляем уведомление о запуске
+            send_telegram(f"""
+🚀 <b>БОТ ЗАПУЩЕН!</b>
+
+✅ Все источники активны
+💾 История загружена: {len(seen_items)} постов
+⏰ Первая проверка через минуту
+
+<i>Работаю в фоне...</i>
+            """)
         else:
             print(f"⚠️ Ошибка webhook: {response.text}")
     except Exception as e:
@@ -633,33 +720,12 @@ def setup_webhook():
 # ========================================
 
 print("=" * 50)
-print("🎮 МУЛЬТИИСТОЧНИКОВЫЙ БОТ ЗАПУСКАЕТСЯ...")
+print("🎮 МУЛЬТИИСТОЧНИКОВЫЙ БОТ С СОХРАНЕНИЕМ")
 print("=" * 50)
 
-# Загружаем существующие посты
-print("📥 Загружаю существующие посты из всех источников...")
-
-# Reddit
-for rss_url in RSS_SOURCES['reddit']:
-    try:
-        feed = feedparser.parse(rss_url)
-        for entry in feed.entries:
-            seen_items.add(entry.link)
-        print(f"✅ [Reddit] Загружено: {len(feed.entries)} постов")
-    except Exception as e:
-        print(f"⚠️ Ошибка Reddit: {e}")
-
-# Dealabs
-for rss_url in RSS_SOURCES['dealabs']:
-    try:
-        feed = feedparser.parse(rss_url)
-        for entry in feed.entries:
-            seen_items.add(entry.link)
-        print(f"✅ [Dealabs] Загружено: {len(feed.entries)} постов")
-    except Exception as e:
-        print(f"⚠️ Ошибка Dealabs: {e}")
-
-print(f"✅ Всего загружено {len(seen_items)} постов")
+# НЕ загружаем посты в память при старте!
+# История уже загружена через load_history()
+print(f"💾 В истории: {len(seen_items)} постов")
 print("=" * 50)
 
 # ========================================
@@ -674,7 +740,8 @@ def run_bot():
         try:
             current_time = time.strftime('%H:%M:%S')
             print(f"\n{'='*50}")
-            print(f"🔍 ПРОВЕРКА ВСЕХ ИСТОЧНИКОВ [{current_time}]")
+            print(f"🔍 ПРОВЕРКА [{current_time}]")
+            print(f"💾 В памяти: {len(seen_items)} постов")
             print(f"{'='*50}")
             
             # Проверяем все источники
@@ -684,7 +751,7 @@ def run_bot():
             stats['last_check'] = current_time
             
             if found > 0:
-                print(f"✅ Найдено игр: {found}")
+                print(f"✅ Найдено новых игр: {found}")
             else:
                 print("ℹ️ Новых раздач нет")
             
@@ -712,5 +779,7 @@ if __name__ == '__main__':
     
     # Запускаем Flask
     port = int(os.environ.get('PORT', 10000))
-    print(f"🌐 Flask на порту {port}")
+    print(f"🌐 Flask запускается на порту {port}")
+    print(f"💾 История будет сохраняться автоматически")
+    print("=" * 50)
     app.run(host='0.0.0.0', port=port)
