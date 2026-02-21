@@ -105,7 +105,7 @@ def get_main_keyboard():
             ],
             [
                 {"text": "📈 Источники"},
-                {"text": "❓ Помощь"}
+                {"text": "❓ Наська"}
             ]
         ],
         "resize_keyboard": True,
