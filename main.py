@@ -17,7 +17,7 @@ from collections import defaultdict
 # ========================================
 TOKEN = os.environ.get('TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
-DATABASE_URL = 'postgresql://game_user:Snz9KZd4OPlmuuubJxD5GnFmmU39sddoO@pg-d6cpeg8gichc739q2bsg-a/games_SuoK'
+DATABASE_URL = os.environ.get('postgresql://games_user:WTKgdDj4k7AoDU8qqhR0ptazxjK4MTdZ@dpg-d6ct6qdm5p6s73f182e0-a/games_db_pkvo')
 
 # Исправление для PostgreSQL на Render
 if DATABASE_URL and DATABASE_URL.startswith("postgres://"):
